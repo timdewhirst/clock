@@ -1,25 +1,11 @@
+
+// std
+#include <array>
+#include <cstdint>
+#include <tuple>
+
+// arduino
 #include <MATRIX7219.h>
-
-/*
-
-  Udp NTP Client
-
-  Get the time from a Network Time Protocol (NTP) time server
-  Demonstrates use of UDP sendPacket and ReceivePacket
-  For more on NTP time servers and the messages needed to communicate with them,
-  see http://en.wikipedia.org/wiki/Network_Time_Protocol
-
-  created 4 Sep 2010
-  by Michael Margolis
-  modified 9 Apr 2012
-  by Tom Igoe
-  updated for the ESP8266 12 Apr 2015
-  by Ivan Grokhotkov
-
-  This code is in the public domain.
-
-*/
-
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
 
@@ -31,12 +17,207 @@
 const char* ssid = STASSID;  // your network SSID (name)
 const char* pass = STAPSK;   // your network password
 
+/// masks: index is the mask width i.e.
+/// - index 0 -> 0b00000000
+/// - index 2 -> 0b00000011
+static const uint8_t masks[] = { 
+  0b00000000,
+  0b00000001,
+  0b00000011,
+  0b00000111,
+  0b00001111,
+  0b00011111,
+  0b00111111,
+  0b01111111,
+  0b11111111
+};
+
+static const uint8_t display_height = 8;
+
+/// representation of a char; max size is 8x8
+struct Char
+{
+  using data_t = std::array<uint8_t, display_height>;
+  
+  Char(uint8_t width_, data_t&& data_)
+    : width(width_)
+    , data(data_)
+  {}
+
+  // returns data for row masked according to width
+  uint8_t row(uint8_t r) const
+  {
+    return data[r] & masks[width];  
+  }
+
+  const uint8_t width;
+  const data_t data;
+};
+
+const static Char s_colon( 
+  2, 
+  {0b00000000,
+   0b00000000,
+   0b00000001,
+   0b00000001,
+   0b00000000,
+   0b00000001,
+   0b00000001,
+   0b00000000}); 
+const static Char s_one( 
+  5, 
+  {0b00000000,
+   0b00000010,
+   0b00000110,
+   0b00000010,
+   0b00000010,
+   0b00000010,
+   0b00000111,
+   0b00000000}); 
+const static Char s_two( 
+  5, 
+  {0b00000000,
+   0b00000110,
+   0b00001001,
+   0b00000001,
+   0b00000010,
+   0b00000100,
+   0b00001111,
+   0b00000000}); 
+const static Char s_three( 
+  5, 
+  {0b00000000,
+   0b00000110,
+   0b00001001,
+   0b00000010,
+   0b00000001,
+   0b00001001,
+   0b00000110,
+   0b00000000}); 
+const static Char s_four( 
+  5, 
+  {0b00000000,
+   0b00000010,
+   0b00000110,
+   0b00001010,
+   0b00001111,
+   0b00000010,
+   0b00000010,
+   0b00000000}); 
+const static Char s_five( 
+  5, 
+  {0b00000000,
+   0b00001111,
+   0b00001000,
+   0b00001110,
+   0b00000001,
+   0b00001001,
+   0b00000110,
+   0b00000000}); 
+const static Char s_six( 
+  5, 
+  {0b00000000,
+   0b00000110,
+   0b00001000,
+   0b00001110,
+   0b00001001,
+   0b00001001,
+   0b00000110,
+   0b00000000}); 
+const static Char s_seven( 
+  5, 
+  {0b00000000,
+   0b00001111,
+   0b00000001,
+   0b00000010,
+   0b00000010,
+   0b00000100,
+   0b00000100,
+   0b00000000}); 
+const static Char s_eight( 
+  5, 
+  {0b00000000,
+   0b00000110,
+   0b00001001,
+   0b00000110,
+   0b00001001,
+   0b00001001,
+   0b00000110,
+   0b00000000}); 
+const static Char s_nine( 
+  5, 
+  {0b00000000,
+   0b00000110,
+   0b00001001,
+   0b00001001,
+   0b00000111,
+   0b00000001,
+   0b00000110,
+   0b00000000}); 
+const static Char s_zero( 
+  5, 
+  {0b00000000,
+   0b00000110,
+   0b00001001,
+   0b00001001,
+   0b00001001,
+   0b00001001,
+   0b00000110,
+   0b00000000}); 
+
+static const Char digits[] = {
+  s_zero,
+  s_one,
+  s_two,
+  s_three,
+  s_four,
+  s_five,
+  s_six,
+  s_seven,
+  s_eight,
+  s_nine
+};
+
+/// store displayable string as a series of rows,
+/// left most is MSB
+struct Display
+{
+  using data_t = std::array<uint64_t, display_height>;
+  
+  /// extract data for one row in one matrix; matrix is
+  /// zero indexed
+  uint8_t get_matrix_row(uint8_t matrix, uint8_t row) const
+  {
+    uint64_t data = rows[row];
+    data >>= (matrix * 8);
+    return data;
+  }
+
+  void add_char(const Char& c)
+  {
+    for ( uint8_t r_index=0; r_index<display_height; ++r_index )
+    {
+      uint64_t r = c.row(r_index);
+      r <<= column_offset;
+      rows[r_index] |= r;
+    }
+
+    column_offset += c.width;
+  }
+
+  void clear()
+  {
+    rows = {};
+    column_offset = 0;
+  }
+  
+  data_t rows {};
+  uint8_t column_offset {};
+};
+
 
 unsigned int localPort = 2390;  // local port to listen for UDP packets
 
-/* Don't hardwire the IP address or we won't get the benefits of the pool.
-    Lookup the IP address for the host name instead */
-// IPAddress timeServer(129, 6, 15, 28); // time.nist.gov NTP server
 IPAddress timeServerIP;  // time.nist.gov NTP server address
 const char* ntpServerName = "time.nist.gov";
 
@@ -63,9 +244,21 @@ MATRIX7219 matrix(
 // keep track of how long since last NTP query
 int ntp_query_time = -1;
 
+// keep track of time
+struct
+{
+  uint8_t h {};
+  uint8_t m {};
+  uint8_t s {};
+} 
+current_time;
+
 // default brightness: 0..15
 int brightness = 3;
 
+/// check to see if this is either:
+/// - the first call, or
+/// - 10s has elapsed
 bool should_poll_ntp(int now)
 {
   if ( ntp_query_time == -1 )
@@ -78,6 +271,13 @@ bool should_poll_ntp(int now)
   return false;
 }
 
+/// split number into tens, units
+constexpr std::tuple<uint8_t, uint8_t> split(uint8_t n)
+{
+  return { n/10, n%10 };
+}
+
+///
 void setup() 
 {
   // setup matrix
@@ -110,21 +310,34 @@ void setup()
   Serial.println(udp.localPort());
 }
 
+///
 void loop() 
 {  
+  // read & set brightness - maps from analogue_pin to 0..15
   int a = analogRead(analogue_pin) / 64;
-  Serial.print("brightness: ");
-  Serial.println(a);
-
   if ( a != brightness )
   {
     brightness = a;
     matrix.setBrightness(a);
   }
-  matrix.setRow(1, B11111111, 1);
-  matrix.setRow(2, B10111101, 2);
-  matrix.setRow(3, B11011011, 3);
-  matrix.setRow(4, B11100111, 4);
+
+  // build string - right to left
+  Display d;
+  auto [st, su] = split(current_time.s);
+  d.add_char(digits[su]);
+  d.add_char(digits[st]);
+  auto [mt, mu] = split(current_time.m);
+  d.add_char(digits[mu]);
+  d.add_char(digits[mt]);
+  auto [ht, hu] = split(current_time.h);
+  d.add_char(digits[hu]);
+  d.add_char(digits[ht]);
+ 
+  for ( uint8_t m = 0; m < 4; ++m )
+    for ( uint8_t r = 0; r < display_height; ++r )
+    {
+      matrix.setRow(1 + r, d.get_matrix_row(m, r), 1 + m);
+    }
 
   // check if we need to update NTP
   int now = millis();
@@ -139,7 +352,7 @@ void loop()
   
     int cb = 0;
     int wait_count = 0;
-    while (!cb && wait_count < 20)
+    while (!cb && wait_count < 10)
     {
       ++wait_count;
       delay(100); 
@@ -177,7 +390,6 @@ void loop()
       unsigned long epoch = secsSince1900 - seventyYears;
       // print Unix time:
       Serial.println(epoch);
-  
   
       // print the hour, minute and second:
       Serial.print("The UTC time is ");       // UTC is the time at Greenwich Meridian (GMT)
