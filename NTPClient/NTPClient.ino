@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <tuple>
+#include <time.h>
 
 // arduino
 #include <MATRIX7219.h>
@@ -36,6 +37,23 @@ byte packetBuffer[NTP_PACKET_SIZE];  // buffer to hold incoming and outgoing pac
 // A UDP instance to let us send and receive packets over UDP
 WiFiUDP udp;
 
+constexpr uint16_t read_be16(byte* d)
+{
+  uint16_t result = uint16_t{ d[0] } << 8;
+  result |= d[1];
+
+  return result;
+}
+
+constexpr uint32_t read_be32(byte* d)
+{
+  uint32_t result = uint32_t{ read_be16(d) } << 16;
+  d += 2;
+  result |= uint32_t{ read_be16(d) };
+
+  return result;
+}
+
 bool get_ntp_time()
 {
   IPAddress timeServerIP;
@@ -46,59 +64,47 @@ bool get_ntp_time()
   
   int cb = 0;
   int wait_count = 0;
-  while (!cb && wait_count < 10)
+  while (!cb && wait_count < 1000)
   {
     ++wait_count;
-    delay(100); 
+    delay(10); 
     cb = udp.parsePacket();
   }
   
   if (!cb) 
     return false;
   
-  Serial.print("packet received, length=");
-  Serial.println(cb);
-
   // We've received a packet, read the data from it
   udp.read(packetBuffer, NTP_PACKET_SIZE);  // read the packet into the buffer
 
-  // the timestamp starts at byte 40 of the received packet and is four bytes,
-  //  or two words, long. First, extract the two words:
-
-  unsigned long highWord = word(packetBuffer[40], packetBuffer[41]);
-  unsigned long lowWord = word(packetBuffer[42], packetBuffer[43]);
-  // combine the four bytes (two words) into a long integer
-  // this is NTP time (seconds since Jan 1 1900):
-  unsigned long secsSince1900 = highWord << 16 | lowWord;
-  Serial.print("Seconds since Jan 1 1900 = ");
-  Serial.println(secsSince1900);
+  // decode the packet: see https://www.rfc-editor.org/rfc/rfc5905.html
+  uint32_t secsSince1900 = read_be32(&packetBuffer[40]);
+  uint32_t fractional = read_be32(&packetBuffer[44]);
 
   // now convert NTP time into everyday time:
-  Serial.print("Unix time = ");
   // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
   const unsigned long seventyYears = 2208988800UL;
-  // subtract seventy years:
-  unsigned long epoch = secsSince1900 - seventyYears;
-  // print Unix time:
+  time_t epoch = secsSince1900 - seventyYears;
+
+  // convert to tm and update current_time
+  tm time_;
+  localtime_r(&epoch, &time_);
+  current_time.h = time_.tm_hour;
+  current_time.m = time_.tm_min;
+  current_time.s = time_.tm_sec;
+
+  // store fractional part
+
+  Serial.print("packet received, length: ");
+  Serial.println(cb);
+  Serial.print("Seconds since Jan 1 1900: ");
+  Serial.print(secsSince1900);
+  Serial.print(".");
+  Serial.println(fractional);
+  Serial.println(millis());
+  Serial.print("Unix time: ");
   Serial.println(epoch);
 
-  
-
-  // print the hour, minute and second:
-  Serial.print("The UTC time is ");       // UTC is the time at Greenwich Meridian (GMT)
-  Serial.print((epoch % 86400L) / 3600);  // print the hour (86400 equals secs per day)
-  Serial.print(':');
-  if (((epoch % 3600) / 60) < 10) {
-    // In the first 10 minutes of each hour, we'll want a leading '0'
-    Serial.print('0');
-  }
-  Serial.print((epoch % 3600) / 60);  // print the minute (3600 equals secs per minute)
-  Serial.print(':');
-  if ((epoch % 60) < 10) {
-    // In the first 10 seconds of each minute, we'll want a leading '0'
-    Serial.print('0');
-  }
-  Serial.println(epoch % 60);  // print the second
   return true;
 }
 
@@ -359,8 +365,8 @@ bool should_poll_ntp(int now)
   if ( ntp_query_time == -1 )
     return true;
 
-  // 10s polling time
-  if ( (now - ntp_query_time) > 10'000 )
+  // 100s polling time
+  if ( (now - ntp_query_time) > 100'000 )
     return true; 
 
   return false;
@@ -402,6 +408,8 @@ void setup()
   Serial.print("Local port: ");
   Serial.println(udp.localPort());
 
+  get_ntp_time();
+
   last_update_ms = millis();
 }
 
@@ -432,94 +440,32 @@ void loop()
   display.add_char(digits[ht]);
   display.render();
 
-  // check if we need to update NTP
+  // update the clock
   int now = millis();
 
   if (now - last_update_ms > 1000)
   {
     last_update_ms = now;
     current_time.s += 1;
-    if ( current_time.s == 100 )
+    if ( current_time.s == 60 )
     {
       current_time.m += 1;
       current_time.s = 0;
     }
-    if ( current_time.m == 100 )
+    if ( current_time.m == 60 )
     {
       current_time.h += 1;
       current_time.m = 0;
     }
+    if ( current_time.h == 24 )
+    {
+      current_time.h = 0;
+      current_time.m = 0;
+      current_time.s = 0;
+    }
   }  
-  if ( should_poll_ntp(now) )
-  {
-    ntp_query_time = now;
-    
-    // get a random server from the pool
-    IPAddress timeServerIP;
-    WiFi.hostByName(ntpServerName, timeServerIP);
   
-    sendNTPpacket(timeServerIP);  // send an NTP packet to a time server
-  
-    int cb = 0;
-    int wait_count = 0;
-    while (!cb && wait_count < 10)
-    {
-      ++wait_count;
-      delay(100); 
-      cb = udp.parsePacket();
-    }
-    
-    if (!cb) 
-    {
-      Serial.println("no packet yet");
-      delay(2000);
-    } 
-    else 
-    {
-      Serial.print("packet received, length=");
-      Serial.println(cb);
-      // We've received a packet, read the data from it
-      udp.read(packetBuffer, NTP_PACKET_SIZE);  // read the packet into the buffer
-  
-      // the timestamp starts at byte 40 of the received packet and is four bytes,
-      //  or two words, long. First, extract the two words:
-  
-      unsigned long highWord = word(packetBuffer[40], packetBuffer[41]);
-      unsigned long lowWord = word(packetBuffer[42], packetBuffer[43]);
-      // combine the four bytes (two words) into a long integer
-      // this is NTP time (seconds since Jan 1 1900):
-      unsigned long secsSince1900 = highWord << 16 | lowWord;
-      Serial.print("Seconds since Jan 1 1900 = ");
-      Serial.println(secsSince1900);
-  
-      // now convert NTP time into everyday time:
-      Serial.print("Unix time = ");
-      // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
-      const unsigned long seventyYears = 2208988800UL;
-      // subtract seventy years:
-      unsigned long epoch = secsSince1900 - seventyYears;
-      // print Unix time:
-      Serial.println(epoch);
-  
-      // print the hour, minute and second:
-      Serial.print("The UTC time is ");       // UTC is the time at Greenwich Meridian (GMT)
-      Serial.print((epoch % 86400L) / 3600);  // print the hour (86400 equals secs per day)
-      Serial.print(':');
-      if (((epoch % 3600) / 60) < 10) {
-        // In the first 10 minutes of each hour, we'll want a leading '0'
-        Serial.print('0');
-      }
-      Serial.print((epoch % 3600) / 60);  // print the minute (3600 equals secs per minute)
-      Serial.print(':');
-      if ((epoch % 60) < 10) {
-        // In the first 10 seconds of each minute, we'll want a leading '0'
-        Serial.print('0');
-      }
-      Serial.println(epoch % 60);  // print the second
-    }
-  }
-  
-  delay(100);
+  delay(10);
 }
 
 // send an NTP request to the time server at the given address
@@ -535,10 +481,10 @@ void sendNTPpacket(IPAddress& address)
   packetBuffer[2] = 6;           // Polling Interval
   packetBuffer[3] = 0xEC;        // Peer Clock Precision
   // 8 bytes of zero for Root Delay & Root Dispersion
-  packetBuffer[12] = 49;
-  packetBuffer[13] = 0x4E;
-  packetBuffer[14] = 49;
-  packetBuffer[15] = 52;
+  packetBuffer[12] = 't';
+  packetBuffer[13] = 'i';
+  packetBuffer[14] = 'm';
+  packetBuffer[15] = 'e';
 
   // all NTP fields have been given values, now
   // you can send a packet requesting a timestamp:
