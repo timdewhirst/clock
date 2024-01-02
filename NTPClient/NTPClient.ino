@@ -19,14 +19,8 @@ const char* ssid = STASSID;  // your network SSID (name)
 const char* pass = STAPSK;   // your network password
 
 // keep track of time
-struct Time
-{
-  uint8_t h {};
-  uint8_t m {};
-  uint8_t s {};
-} 
-current_time;
-int last_update_ms = -1;
+uint64_t ntp_time_ms {};
+uint64_t last_update_ms {};
 
 unsigned int localPort = 2390;  // local port to listen for UDP packets
 const char* ntpServerName = "time.nist.gov";
@@ -78,22 +72,15 @@ bool get_ntp_time()
   udp.read(packetBuffer, NTP_PACKET_SIZE);  // read the packet into the buffer
 
   // decode the packet: see https://www.rfc-editor.org/rfc/rfc5905.html
-  uint32_t secsSince1900 = read_be32(&packetBuffer[40]);
-  uint32_t fractional = read_be32(&packetBuffer[44]);
+  uint64_t secsSince1900 = read_be32(&packetBuffer[40]);
+  uint64_t fractional = read_be32(&packetBuffer[44]);
 
   // now convert NTP time into everyday time:
   // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
-  const unsigned long seventyYears = 2208988800UL;
-  time_t epoch = secsSince1900 - seventyYears;
-
-  // convert to tm and update current_time
-  tm time_;
-  localtime_r(&epoch, &time_);
-  current_time.h = time_.tm_hour;
-  current_time.m = time_.tm_min;
-  current_time.s = time_.tm_sec;
-
-  // store fractional part
+  const uint64_t seventyYears = 2208988800UL;
+  ntp_time_ms = (secsSince1900 - seventyYears) * 1000;
+  ntp_time_ms += fractional / 1'000'000;
+  last_update_ms = millis();
 
   Serial.print("packet received, length: ");
   Serial.println(cb);
@@ -101,9 +88,8 @@ bool get_ntp_time()
   Serial.print(secsSince1900);
   Serial.print(".");
   Serial.println(fractional);
-  Serial.println(millis());
-  Serial.print("Unix time: ");
-  Serial.println(epoch);
+  Serial.print("NTP time ms: ");
+  Serial.println(ntp_time_ms);
 
   return true;
 }
@@ -400,7 +386,7 @@ void setup()
   Serial.println("");
 
   Serial.println("WiFi connected");
-  Serial.println("IP address: ");
+  Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 
   Serial.println("Starting UDP");
@@ -409,13 +395,19 @@ void setup()
   Serial.println(udp.localPort());
 
   get_ntp_time();
-
-  last_update_ms = millis();
 }
 
 ///
 void loop() 
 {  
+  // update the clock
+  int now = millis();
+
+  // convert to tm and update current_time
+  time_t epoch = (ntp_time_ms + now - last_update_ms)/1000;
+  tm time_;
+  localtime_r(&epoch, &time_);
+
   // read & set brightness - maps from analogue_pin to 0..15
   int a = analogRead(analogue_pin) / 64;
   if ( a != brightness )
@@ -426,45 +418,19 @@ void loop()
 
   // build string - right to left
   display.clear();
-  auto [st, su] = split(current_time.s);
+  auto [st, su] = split(time_.tm_sec);
   display.add_char(digits[su]);
   display.add_char(digits[st]);
   display.add_char(s_colon);
-  auto [mt, mu] = split(current_time.m);
+  auto [mt, mu] = split(time_.tm_min);
   display.add_char(digits[mu]);
   display.add_char(digits[mt]);
   display.add_char(s_colon);
-  
-  auto [ht, hu] = split(current_time.h);
+  auto [ht, hu] = split(time_.tm_hour);
   display.add_char(digits[hu]);
   display.add_char(digits[ht]);
   display.render();
 
-  // update the clock
-  int now = millis();
-
-  if (now - last_update_ms > 1000)
-  {
-    last_update_ms = now;
-    current_time.s += 1;
-    if ( current_time.s == 60 )
-    {
-      current_time.m += 1;
-      current_time.s = 0;
-    }
-    if ( current_time.m == 60 )
-    {
-      current_time.h += 1;
-      current_time.m = 0;
-    }
-    if ( current_time.h == 24 )
-    {
-      current_time.h = 0;
-      current_time.m = 0;
-      current_time.s = 0;
-    }
-  }  
-  
   delay(10);
 }
 
