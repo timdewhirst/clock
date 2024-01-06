@@ -18,6 +18,7 @@ static const uint8_t masks[] = {
 };
 
 static const uint8_t display_height = 8;
+static const uint8_t display_width = 8;
 
 /// representation of a char; max size is 8x8
 struct Char
@@ -179,50 +180,74 @@ struct Display
 {
   using data_t = std::array<uint64_t, display_height>;
 
-  Display( MATRIX7219& m )
-    : matrix(m)
+  enum Alignment
   {
-    matrix.begin();
-    matrix.clear();  
+    LEFT,
+    CENTER,
+    RIGHT
+  };
+
+  Display( MATRIX7219& m )
+    : matrix_(m)
+    , total_width_(m.getMatrixCount() * display_width)
+  {
+    matrix_.begin();
+    matrix_.clear();  
   }
      
   /// extract data for one row in one matrix; matrix is
   /// zero indexed
   uint8_t get_matrix_row(uint8_t matrix, uint8_t row) const
   {
-    uint64_t data = rows[row];
-    data >>= (matrix * 8);
+    uint64_t data = rows_[row];
+    switch (alignment_) {
+      case LEFT:
+        data <<= total_width_ - column_offset_;
+        break;
+      case CENTER:
+        data <<= (total_width_ - column_offset_)/2;
+        break;
+      case RIGHT:
+      default:
+        break;
+    }
+    data >>= (matrix * display_width);
     return data;
   }
+
+  Alignment alignment() const { return alignment_; }
+  void set_alignment(Alignment a) { alignment_ = a; }
 
   void add_char(const Char& c)
   {
     for ( uint8_t r_index=0; r_index<display_height; ++r_index )
     {
       uint64_t r = c.row(r_index);
-      r <<= column_offset;
-      rows[r_index] |= r;
+      r <<= column_offset_;
+      rows_[r_index] |= r;
     }
 
-    column_offset += c.width;
+    column_offset_ += c.width;
   }
 
   void clear()
   {
-    rows = {};
-    column_offset = 0;
+    rows_ = {};
+    column_offset_ = 0;
   }
 
   void render()
   {
-    for ( uint8_t m = 0; m < matrix.getMatrixCount(); ++m )
+    for ( uint8_t m = 0; m < matrix_.getMatrixCount(); ++m )
       for ( uint8_t r = 0; r < display_height; ++r )
       {
-        matrix.setRow(1 + r, get_matrix_row(m, r), 1 + m);
+        matrix_.setRow(1 + r, get_matrix_row(m, r), 1 + m);
       }
   }
 
-  MATRIX7219& matrix;
-  data_t rows {};
-  uint8_t column_offset {};
+  MATRIX7219& matrix_;
+  const uint8_t total_width_;
+  data_t rows_ {};
+  uint8_t column_offset_ {};
+  Alignment alignment_ { CENTER };
 };
