@@ -12,6 +12,7 @@
 
 // local
 #include "Display.hpp"
+#include "NTP.hpp"
 
 #ifndef STASSID
 #define STASSID "BT-Q8AK8R"
@@ -34,21 +35,30 @@ byte packetBuffer[NTP_PACKET_SIZE];  // buffer to hold incoming and outgoing pac
 // A UDP instance to let us send and receive packets over UDP
 WiFiUDP udp;
 
-constexpr uint16_t read_be16(byte* d)
+// send an NTP request to the time server at the given address
+void sendNTPpacket(IPAddress& address) 
 {
-  uint16_t result = uint16_t{ d[0] } << 8;
-  result |= d[1];
+  Serial.println("sending NTP packet...");
+  // set all bytes in the buffer to 0
+  memset(packetBuffer, 0, NTP_PACKET_SIZE);
 
-  return result;
-}
+  // Initialize values needed to form NTP request
+  // (see URL above for details on the packets)
+  packetBuffer[0] = 0b11100011;  // LI, Version, Mode
+  packetBuffer[1] = 0;           // Stratum, or type of clock
+  packetBuffer[2] = 6;           // Polling Interval
+  packetBuffer[3] = 0xEC;        // Peer Clock Precision
+  // 8 bytes of zero for Root Delay & Root Dispersion
+  packetBuffer[12] = 't';
+  packetBuffer[13] = 'i';
+  packetBuffer[14] = 'm';
+  packetBuffer[15] = 'e';
 
-constexpr uint32_t read_be32(byte* d)
-{
-  uint32_t result = uint32_t{ read_be16(d) } << 16;
-  d += 2;
-  result |= uint32_t{ read_be16(d) };
-
-  return result;
+  // all NTP fields have been given values, now
+  // you can send a packet requesting a timestamp:
+  udp.beginPacket(address, 123);  // NTP requests are to port 123
+  udp.write(packetBuffer, NTP_PACKET_SIZE);
+  udp.endPacket();
 }
 
 bool get_ntp_time()
@@ -102,6 +112,24 @@ static const int matrix_data_pin = D7;
 static const int matrix_select_pin = D8;
 static const int matrix_clock_pin = D5;
 static const int matrix_count = 5;
+static const int switch_pin = D1;
+
+// monitor for switch press
+struct Button {
+  uint32_t numberKeyPresses;
+  bool pressed;
+};
+
+volatile Button button = {0, false};
+
+void ICACHE_RAM_ATTR isr() 
+{
+  if ( button.pressed )
+    return;
+    
+  button.numberKeyPresses++;
+  button.pressed = true;
+}
 
 // matrix interface
 MATRIX7219 matrix(
@@ -144,6 +172,9 @@ constexpr std::tuple<uint8_t, uint8_t> split(uint8_t n)
 ///
 void setup() 
 { 
+  pinMode(switch_pin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(switch_pin), isr, FALLING);
+  
   Serial.begin(115200);
   Serial.println();
   Serial.println();
@@ -177,6 +208,12 @@ void setup()
 ///
 void loop() 
 {  
+  if (button.pressed) 
+  {
+      Serial.printf("Button has been pressed %u times\n", button.numberKeyPresses);
+      button.pressed = false;
+  }
+  
   // update the clock
   int now = millis();
 
@@ -184,6 +221,10 @@ void loop()
   time_t epoch = (ntp_time_ms + now - last_update_ms)/1000;
   tm time_;
   localtime_r(&epoch, &time_);
+
+  // adjust for daylight savings
+  if (time_.tm_isdst == 0)
+    time_.tm_hour += 1;
 
   // read & set brightness - maps from analogue_pin to 0..15
   int a = analogRead(analogue_pin) / 64;
@@ -209,29 +250,4 @@ void loop()
   display.render();
 
   delay(10);
-}
-
-// send an NTP request to the time server at the given address
-void sendNTPpacket(IPAddress& address) 
-{
-  Serial.println("sending NTP packet...");
-  // set all bytes in the buffer to 0
-  memset(packetBuffer, 0, NTP_PACKET_SIZE);
-  // Initialize values needed to form NTP request
-  // (see URL above for details on the packets)
-  packetBuffer[0] = 0b11100011;  // LI, Version, Mode
-  packetBuffer[1] = 0;           // Stratum, or type of clock
-  packetBuffer[2] = 6;           // Polling Interval
-  packetBuffer[3] = 0xEC;        // Peer Clock Precision
-  // 8 bytes of zero for Root Delay & Root Dispersion
-  packetBuffer[12] = 't';
-  packetBuffer[13] = 'i';
-  packetBuffer[14] = 'm';
-  packetBuffer[15] = 'e';
-
-  // all NTP fields have been given values, now
-  // you can send a packet requesting a timestamp:
-  udp.beginPacket(address, 123);  // NTP requests are to port 123
-  udp.write(packetBuffer, NTP_PACKET_SIZE);
-  udp.endPacket();
 }

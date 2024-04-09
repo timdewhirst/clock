@@ -27,7 +27,7 @@ struct Char
   
   Char(uint8_t width_, data_t&& data_)
     : width(width_)
-    , data(data_)
+    , data(std::move(data_))
   {}
 
   // returns data for row masked according to width
